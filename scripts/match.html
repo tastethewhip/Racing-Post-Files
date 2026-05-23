@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CSV Horse Matcher</title>
+
+<style>
+    body {
+        font-family: Arial, sans-serif;
+        background: #f4f6f8;
+        margin: 40px;
+        color: #222;
+    }
+
+    .container {
+        max-width: 900px;
+        background: #fff;
+        padding: 30px;
+        border-radius: 12px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+
+    h1 {
+        margin-top: 0;
+    }
+
+    input[type="file"] {
+        display: block;
+        margin: 10px 0 20px;
+    }
+
+    button {
+        padding: 12px 24px;
+        font-size: 16px;
+        border: none;
+        border-radius: 8px;
+        background: #007bff;
+        color: white;
+        cursor: pointer;
+    }
+
+    button:hover {
+        background: #0056b3;
+    }
+
+    #status {
+        margin-top: 20px;
+        background: #eef3f8;
+        padding: 15px;
+        border-radius: 8px;
+        white-space: pre-wrap;
+        font-family: monospace;
+    }
+
+    code {
+        background: #f1f1f1;
+        padding: 2px 4px;
+        border-radius: 4px;
+    }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <h1>CSV Horse Matcher</h1>
+
+    <p><strong>a.csv</strong> headers:</p>
+    <p>
+        <code>course, off_time, name, Score, Rank, %, Price, Comment, Spotlight, Quotes</code>
+    </p>
+
+    <p><strong>b.csv</strong> must contain:</p>
+    <p>
+        <code>horse, course, off, pos, sp</code>
+    </p>
+
+    <p>
+        Matches:
+        <br><code>b.csv → horse</code>
+        <br><code>a.csv → name</code>
+    </p>
+
+    <p>
+        Trailing brackets are ignored:
+        <br><code>Fast Runner (IRE)</code> → <code>Fast Runner</code>
+    </p>
+
+    <p>
+        Output file <strong>c.csv</strong> contains:
+        <br><code>horse, course, off, pos, sp, Rank</code>
+    </p>
+
+    <label>Select a.csv</label>
+    <input type="file" id="fileA" accept=".csv">
+
+    <label>Select b.csv</label>
+    <input type="file" id="fileB" accept=".csv">
+
+    <button id="processBtn">Create c.csv</button>
+
+    <div id="status">Ready.</div>
+</div>
+
+<script>
+function parseCSV(text) {
+    const rows = [];
+    let row = [];
+    let cell = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        const next = text[i + 1];
+
+        if (char === '"') {
+            if (inQuotes && next === '"') {
+                cell += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+        } else if (char === ',' && !inQuotes) {
+            row.push(cell);
+            cell = '';
+        } else if ((char === '\n' || char === '\r') && !inQuotes) {
+            if (char === '\r' && next === '\n') i++;
+            row.push(cell);
+
+            if (row.length > 1 || row[0] !== '') {
+                rows.push(row);
+            }
+
+            row = [];
+            cell = '';
+        } else {
+            cell += char;
+        }
+    }
+
+    if (cell.length > 0 || row.length > 0) {
+        row.push(cell);
+        rows.push(row);
+    }
+
+    if (rows.length === 0) return [];
+
+    const headers = rows[0].map(h => h.trim());
+
+    return rows.slice(1).map(r => {
+        const obj = {};
+        headers.forEach((h, i) => {
+            obj[h] = r[i] ?? '';
+        });
+        return obj;
+    });
+}
+
+function csvEscape(value) {
+    value = value == null ? '' : String(value);
+
+    if (/[",\n]/.test(value)) {
+        return '"' + value.replace(/"/g, '""') + '"';
+    }
+
+    return value;
+}
+
+function toCSV(rows, headers) {
+    const lines = [headers.join(',')];
+
+    for (const row of rows) {
+        lines.push(
+            headers.map(h => csvEscape(row[h])).join(',')
+        );
+    }
+
+    return lines.join('\n');
+}
+
+function normalizeHorseName(name) {
+    if (!name) return '';
+
+    return name
+        .replace(/\s*\([^)]*\)\s*$/, '') // Remove trailing brackets
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+}
+
+function readFile(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = reject;
+        reader.readAsText(file);
+    });
+}
+
+document.getElementById('processBtn').addEventListener('click', async () => {
+    const fileA = document.getElementById('fileA').files[0];
+    const fileB = document.getElementById('fileB').files[0];
+    const status = document.getElementById('status');
+
+    if (!fileA || !fileB) {
+        status.textContent = 'Please select both a.csv and b.csv.';
+        return;
+    }
+
+    try {
+        status.textContent = 'Reading files...';
+
+        const [textA, textB] = await Promise.all([
+            readFile(fileA),
+            readFile(fileB)
+        ]);
+
+        status.textContent = 'Parsing CSV files...';
+
+        const dataA = parseCSV(textA);
+        const dataB = parseCSV(textB);
+
+        if (dataA.length === 0) {
+            throw new Error('a.csv appears to be empty.');
+        }
+
+        if (dataB.length === 0) {
+            throw new Error('b.csv appears to be empty.');
+        }
+
+        // Build lookup: horse name -> Rank
+        status.textContent = 'Building lookup from a.csv...';
+
+        const rankLookup = new Map();
+
+        for (const row of dataA) {
+            const key = normalizeHorseName(row.name);
+            if (key) {
+                rankLookup.set(key, row.Rank || '');
+            }
+        }
+
+        // Match horses
+        status.textContent = 'Matching horses...';
+
+        const output = [];
+        let matched = 0;
+
+        for (const row of dataB) {
+            const horseKey = normalizeHorseName(row.horse);
+
+            if (rankLookup.has(horseKey)) {
+                matched++;
+
+                output.push({
+                    horse: row.horse,
+                    course: row.course,
+                    off: row.off,
+                    pos: row.pos,
+                    sp: row.sp,
+                    Rank: rankLookup.get(horseKey)
+                });
+            }
+        }
+
+        status.textContent = 'Creating c.csv...';
+
+        const csv = toCSV(output, [
+            'horse',
+            'course',
+            'off',
+            'pos',
+            'sp',
+            'Rank'
+        ]);
+
+        // Download c.csv
+        const blob = new Blob([csv], {
+            type: 'text/csv;charset=utf-8;'
+        });
+
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'c.csv';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        URL.revokeObjectURL(url);
+
+        status.textContent =
+            'Done!\n\n' +
+            `Rows in a.csv: ${dataA.length}\n` +
+            `Rows in b.csv: ${dataB.length}\n` +
+            `Matched rows: ${matched}\n` +
+            `Output rows: ${output.length}\n\n` +
+            'Downloaded: c.csv';
+
+    } catch (err) {
+        console.error(err);
+        status.textContent = 'Error: ' + err.message;
+    }
+});
+</script>
+
+</body>
+</html>
