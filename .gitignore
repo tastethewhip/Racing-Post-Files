@@ -1,0 +1,12 @@
+data/
+racecards/
+.cache/
+
+.env
+
+.idea/
+.vscode/
+__*/
+
+.DS_Store
+settings/user_settings.toml
